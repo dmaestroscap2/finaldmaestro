@@ -337,6 +337,25 @@ function validateRow(table, row) {
   return true;
 }
 
+function normalizeRow(table, row) {
+  if (!repair) return row;
+  const next = { ...row };
+
+  if (table === "feedback") {
+    if (next.session_id == null || next.session_id === "") next.session_id = 1;
+    if (next.student_id == null || next.student_id === "") next.student_id = 1;
+    if (next.message == null || String(next.message).trim() === "") next.message = "(migrated feedback)";
+  }
+
+  if (table === "notifications") {
+    if (next.user_id == null || next.user_id === "") next.user_id = 1;
+    if (next.message == null || String(next.message).trim() === "") next.message = `(migrated notification ${next.id ?? ""})`.trim();
+    if (next.is_read == null || next.is_read === "") next.is_read = 0;
+  }
+
+  return next;
+}
+
 async function insertTable(table) {
   const sourceCols = getSourceColumns(table);
   const destCols = await getDestColumns(table);
@@ -347,7 +366,7 @@ async function insertTable(table) {
   }
 
   const selectSql = `SELECT ${cols.map((c) => `"${c}"`).join(", ")} FROM ${table};`;
-  const allRows = source.prepare(selectSql).all();
+  const allRows = source.prepare(selectSql).all().map((r) => normalizeRow(table, r));
   const rows = allRows.filter((r) => validateRow(table, r));
   const skipped = allRows.length - rows.length;
   console.log(`[copy] ${table}: ${rows.length} row(s)` + (skipped ? ` (skipped ${skipped})` : ""));
