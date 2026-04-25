@@ -9,6 +9,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite",
     "build": "vite build && tsc -p tsconfig.server.json",
+    "vercel-build": "vite build && node scripts/vercel-backend-build.mjs",
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:klangio": "node ./node_modules/typescript/bin/tsc -p tsconfig.klangio-test.json && node --experimental-specifier-resolution=node test-node/klangio.runner.mjs",
