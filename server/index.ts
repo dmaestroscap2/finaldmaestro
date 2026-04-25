@@ -1624,12 +1624,9 @@ app.get('/api/assignments', requireAuth, async (req, res) => {
         .select()
         .from(assignments)
         .where(
-          or(
-            eq(assignments.studentId, userId),
-            classroomIds.length > 0
-              ? and(isNull(assignments.studentId), or(...classroomIds.map((cid) => eq(assignments.classroomId, cid))))
-              : undefined
-          )
+          classroomIds.length > 0
+            ? or(eq(assignments.studentId, userId), and(isNull(assignments.studentId), inArray(assignments.classroomId, classroomIds as any)))
+            : eq(assignments.studentId, userId)
         );
 
       // Safety: classroom template assignments should always be treated as "assigned" for members.
@@ -1903,7 +1900,7 @@ app.get('/api/sessions/instructor', requireAuth, async (req, res) => {
     const sessionRows = await db
       .select()
       .from(practiceSessions)
-      .where(or(...assignmentIds.map((assignmentId) => eq(practiceSessions.assignmentId, assignmentId))))
+      .where(inArray(practiceSessions.assignmentId, assignmentIds as any))
       .orderBy(desc(practiceSessions.completedAt));
 
     const uniqueStudentIds = Array.from(new Set(sessionRows.map((session) => session.studentId)));
@@ -1923,13 +1920,13 @@ app.get('/api/sessions/instructor', requireAuth, async (req, res) => {
     );
 
     const studentRows = uniqueStudentIds.length
-      ? await db.select().from(users).where(or(...uniqueStudentIds.map((studentId) => eq(users.id, studentId))))
+      ? await db.select().from(users).where(inArray(users.id, uniqueStudentIds as any))
       : [];
     const musicRows = uniqueMusicIds.length
-      ? await db.select().from(musicSheets).where(or(...uniqueMusicIds.map((musicId) => eq(musicSheets.id, musicId))))
+      ? await db.select().from(musicSheets).where(inArray(musicSheets.id, uniqueMusicIds as any))
       : [];
     const classroomRows = uniqueClassroomIds.length
-      ? await db.select().from(classrooms).where(or(...uniqueClassroomIds.map((classroomId) => eq(classrooms.id, classroomId))))
+      ? await db.select().from(classrooms).where(inArray(classrooms.id, uniqueClassroomIds as any))
       : [];
 
     const studentMap = new Map(studentRows.map((student) => [student.id, student]));
@@ -1989,7 +1986,7 @@ app.get('/api/students', requireAuth, async (req, res) => {
       .select({ user: users })
       .from(studentClassrooms)
       .innerJoin(users, eq(studentClassrooms.studentId, users.id))
-      .where(or(...classroomIds.map((cid) => eq(studentClassrooms.classroomId, cid))));
+      .where(inArray(studentClassrooms.classroomId, classroomIds as any));
 
     // Remove duplicates and passwords
     const uniqueStudents = Array.from(new Map(students.map((s) => [s.user.id, s.user])).values()).map((u) => ({
@@ -2082,7 +2079,7 @@ app.get('/api/classrooms/roster-progress', requireAuth, async (req, res) => {
           .select({ classroomId: studentClassrooms.classroomId, student: users })
           .from(studentClassrooms)
           .innerJoin(users, eq(studentClassrooms.studentId, users.id))
-          .where(or(...classroomIds.map((cid) => eq(studentClassrooms.classroomId, cid))))
+          .where(inArray(studentClassrooms.classroomId, classroomIds as any))
       : [];
 
     const memberIds = Array.from(
