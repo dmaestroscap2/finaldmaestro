@@ -33,6 +33,7 @@ if (!tursoUrl || !tursoToken) {
 
 const shouldTruncate = hasFlag("--truncate");
 const dryRun = hasFlag("--dry-run");
+const repair = hasFlag("--repair");
 
 const client = createClient({ url: tursoUrl, authToken: tursoToken });
 
@@ -177,6 +178,106 @@ const sourceMusicSheetIds = loadIdSet("music_sheets", "id");
 const importedAssignmentIds = new Set();
 const importedSessionIds = new Set();
 
+async function rowExists(table, id) {
+  const result = await client.execute({ sql: `SELECT 1 as ok FROM ${table} WHERE id = ? LIMIT 1`, args: [id] });
+  return (result.rows?.length ?? 0) > 0;
+}
+
+const ensured = {
+  users: new Set(),
+  classrooms: new Set(),
+  music_sheets: new Set(),
+  assignments: new Set(),
+  practice_sessions: new Set(),
+};
+
+async function ensureUser(id) {
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return;
+  if (ensured.users.has(n)) return;
+  ensured.users.add(n);
+  if (dryRun) return;
+  if (await rowExists("users", n)) return;
+  const email = `missing-user-${n}@placeholder.local`;
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO users (id, email, password, name, role, instrument, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, unixepoch()))`,
+    args: [n, email, "*", `Missing User ${n}`, "student", null, null],
+  });
+}
+
+async function ensureClassroom(id) {
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return;
+  if (ensured.classrooms.has(n)) return;
+  ensured.classrooms.add(n);
+  if (dryRun) return;
+  if (await rowExists("classrooms", n)) return;
+  // Needs a valid instructor_id
+  const instructorId = 1;
+  await ensureUser(instructorId);
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO classrooms (id, name, code, instructor_id, created_at)
+          VALUES (?, ?, ?, ?, COALESCE(?, unixepoch()))`,
+    args: [n, `Missing Classroom ${n}`, `MISSING-${n}`, instructorId, null],
+  });
+}
+
+async function ensureMusicSheet(id) {
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return;
+  if (ensured.music_sheets.has(n)) return;
+  ensured.music_sheets.add(n);
+  if (dryRun) return;
+  if (await rowExists("music_sheets", n)) return;
+  const uploadedBy = 1;
+  await ensureUser(uploadedBy);
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO music_sheets
+          (id, title, artist, uploaded_by, audio_path, duration, tempo, key, time_signature, difficulty, notes_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'medium', ?, COALESCE(?, unixepoch()))`,
+    args: [n, `Missing Piece ${n}`, "Unknown", uploadedBy, "missing", 0, "[]", null],
+  });
+}
+
+async function ensureAssignment(id) {
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return;
+  if (ensured.assignments.has(n)) return;
+  ensured.assignments.add(n);
+  if (dryRun) return;
+  if (await rowExists("assignments", n)) return;
+  const musicSheetId = 1;
+  const assignedBy = 1;
+  await ensureMusicSheet(musicSheetId);
+  await ensureUser(assignedBy);
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO assignments
+          (id, music_sheet_id, student_id, classroom_id, assigned_by, status, created_at)
+          VALUES (?, ?, NULL, NULL, ?, 'assigned', COALESCE(?, unixepoch()))`,
+    args: [n, musicSheetId, assignedBy, null],
+  });
+}
+
+async function ensurePracticeSession(id) {
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return;
+  if (ensured.practice_sessions.has(n)) return;
+  ensured.practice_sessions.add(n);
+  if (dryRun) return;
+  if (await rowExists("practice_sessions", n)) return;
+  const assignmentId = 1;
+  const studentId = 1;
+  await ensureAssignment(assignmentId);
+  await ensureUser(studentId);
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO practice_sessions
+          (id, assignment_id, student_id, accuracy_score, timing_score, total_notes, correct_notes, wrong_notes, missed_notes, performance_data, duration, passed, started_at, completed_at)
+          VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, NULL, COALESCE(?, unixepoch()))`,
+    args: [n, assignmentId, studentId, null],
+  });
+}
+
 async function truncateAll() {
   for (const table of tables.slice().reverse()) {
     await execScript(`DELETE FROM ${table};`);
@@ -197,16 +298,16 @@ async function getDestColumns(table) {
 function validateRow(table, row) {
   // Skip rows that would violate FK constraints on the destination.
   if (table === "classrooms") {
-    return sourceUserIds.has(Number(row.instructor_id));
+    return sourceUserIds.has(Number(row.instructor_id)) || repair;
   }
   if (table === "student_classrooms") {
     return (
-      sourceUserIds.has(Number(row.student_id)) &&
-      sourceClassroomIds.has(Number(row.classroom_id))
+      (sourceUserIds.has(Number(row.student_id)) || repair) &&
+      (sourceClassroomIds.has(Number(row.classroom_id)) || repair)
     );
   }
   if (table === "music_sheets") {
-    return sourceUserIds.has(Number(row.uploaded_by));
+    return sourceUserIds.has(Number(row.uploaded_by)) || repair;
   }
   if (table === "assignments") {
     const msOk = sourceMusicSheetIds.has(Number(row.music_sheet_id));
@@ -215,23 +316,23 @@ function validateRow(table, row) {
       row.student_id == null || row.student_id === "" || sourceUserIds.has(Number(row.student_id));
     const classroomOk =
       row.classroom_id == null || row.classroom_id === "" || sourceClassroomIds.has(Number(row.classroom_id));
-    return msOk && assignedByOk && studentOk && classroomOk;
+    return (msOk && assignedByOk && studentOk && classroomOk) || repair;
   }
   if (table === "practice_sessions") {
     // Only import sessions tied to imported assignments.
     const assignmentOk = importedAssignmentIds.has(Number(row.assignment_id));
     const studentOk = sourceUserIds.has(Number(row.student_id));
-    return assignmentOk && studentOk;
+    return (assignmentOk && studentOk) || repair;
   }
   if (table === "feedback") {
     const sessionOk = importedSessionIds.has(Number(row.session_id));
     const studentOk = sourceUserIds.has(Number(row.student_id));
     const instructorOk =
       row.instructor_id == null || row.instructor_id === "" || sourceUserIds.has(Number(row.instructor_id));
-    return sessionOk && studentOk && instructorOk;
+    return (sessionOk && studentOk && instructorOk) || repair;
   }
   if (table === "notifications") {
-    return sourceUserIds.has(Number(row.user_id));
+    return sourceUserIds.has(Number(row.user_id)) || repair;
   }
   return true;
 }
@@ -263,6 +364,31 @@ async function insertTable(table) {
     // Execute row-by-row so we can keep going if the source DB has inconsistencies.
     for (const row of chunk) {
       try {
+        if (repair) {
+          if (table === "classrooms") {
+            await ensureUser(row.instructor_id);
+          } else if (table === "student_classrooms") {
+            await ensureUser(row.student_id);
+            await ensureClassroom(row.classroom_id);
+          } else if (table === "music_sheets") {
+            await ensureUser(row.uploaded_by);
+          } else if (table === "assignments") {
+            await ensureMusicSheet(row.music_sheet_id);
+            await ensureUser(row.assigned_by);
+            if (row.student_id != null && row.student_id !== "") await ensureUser(row.student_id);
+            if (row.classroom_id != null && row.classroom_id !== "") await ensureClassroom(row.classroom_id);
+          } else if (table === "practice_sessions") {
+            await ensureAssignment(row.assignment_id);
+            await ensureUser(row.student_id);
+          } else if (table === "feedback") {
+            await ensurePracticeSession(row.session_id);
+            await ensureUser(row.student_id);
+            if (row.instructor_id != null && row.instructor_id !== "") await ensureUser(row.instructor_id);
+          } else if (table === "notifications") {
+            await ensureUser(row.user_id);
+          }
+        }
+
         await client.execute({ sql: insertSql, args: cols.map((c) => row[c]) });
         if (table === "assignments") importedAssignmentIds.add(Number(row.id));
         if (table === "practice_sessions") importedSessionIds.add(Number(row.id));
@@ -276,6 +402,7 @@ async function insertTable(table) {
 console.log(`Source SQLite: ${fromPath}`);
 console.log(`Target Turso: ${tursoUrl}`);
 if (dryRun) console.log("Dry run enabled (no writes).");
+if (repair) console.log("Repair mode enabled (creates placeholder parent rows).");
 
 await execScript(schemaSql);
 // Importing real-world data often includes historical inconsistencies.

@@ -11,6 +11,7 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "vercel-build": "vite build && node scripts/vercel-backend-build.mjs",
     "db:migrate:turso": "node scripts/migrate-sqlite-to-turso.mjs --truncate",
+    "db:migrate:turso:repair": "node scripts/migrate-sqlite-to-turso.mjs --truncate --repair",
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:klangio": "node ./node_modules/typescript/bin/tsc -p tsconfig.klangio-test.json && node --experimental-specifier-resolution=node test-node/klangio.runner.mjs",
