@@ -29,6 +29,10 @@ import FormData from 'form-data';
 const app = express();
 const PORT = 3001;
 const IS_VERCEL = Boolean(process.env.VERCEL);
+if (IS_VERCEL) {
+  // Vercel runs behind a proxy; needed so `req.secure` is true and secure cookies are set.
+  app.set("trust proxy", 1);
+}
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
