@@ -165,6 +165,18 @@ const tables = [
   "notifications",
 ];
 
+function loadIdSet(table, col = "id") {
+  const rows = source.prepare(`SELECT "${col}" as id FROM ${table}`).all();
+  return new Set(rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n)));
+}
+
+const sourceUserIds = loadIdSet("users", "id");
+const sourceClassroomIds = loadIdSet("classrooms", "id");
+const sourceMusicSheetIds = loadIdSet("music_sheets", "id");
+
+const importedAssignmentIds = new Set();
+const importedSessionIds = new Set();
+
 async function truncateAll() {
   for (const table of tables.slice().reverse()) {
     await execScript(`DELETE FROM ${table};`);
@@ -182,6 +194,48 @@ async function getDestColumns(table) {
   return rows.map((r) => String(r.name));
 }
 
+function validateRow(table, row) {
+  // Skip rows that would violate FK constraints on the destination.
+  if (table === "classrooms") {
+    return sourceUserIds.has(Number(row.instructor_id));
+  }
+  if (table === "student_classrooms") {
+    return (
+      sourceUserIds.has(Number(row.student_id)) &&
+      sourceClassroomIds.has(Number(row.classroom_id))
+    );
+  }
+  if (table === "music_sheets") {
+    return sourceUserIds.has(Number(row.uploaded_by));
+  }
+  if (table === "assignments") {
+    const msOk = sourceMusicSheetIds.has(Number(row.music_sheet_id));
+    const assignedByOk = sourceUserIds.has(Number(row.assigned_by));
+    const studentOk =
+      row.student_id == null || row.student_id === "" || sourceUserIds.has(Number(row.student_id));
+    const classroomOk =
+      row.classroom_id == null || row.classroom_id === "" || sourceClassroomIds.has(Number(row.classroom_id));
+    return msOk && assignedByOk && studentOk && classroomOk;
+  }
+  if (table === "practice_sessions") {
+    // Only import sessions tied to imported assignments.
+    const assignmentOk = importedAssignmentIds.has(Number(row.assignment_id));
+    const studentOk = sourceUserIds.has(Number(row.student_id));
+    return assignmentOk && studentOk;
+  }
+  if (table === "feedback") {
+    const sessionOk = importedSessionIds.has(Number(row.session_id));
+    const studentOk = sourceUserIds.has(Number(row.student_id));
+    const instructorOk =
+      row.instructor_id == null || row.instructor_id === "" || sourceUserIds.has(Number(row.instructor_id));
+    return sessionOk && studentOk && instructorOk;
+  }
+  if (table === "notifications") {
+    return sourceUserIds.has(Number(row.user_id));
+  }
+  return true;
+}
+
 async function insertTable(table) {
   const sourceCols = getSourceColumns(table);
   const destCols = await getDestColumns(table);
@@ -192,8 +246,10 @@ async function insertTable(table) {
   }
 
   const selectSql = `SELECT ${cols.map((c) => `"${c}"`).join(", ")} FROM ${table};`;
-  const rows = source.prepare(selectSql).all();
-  console.log(`[copy] ${table}: ${rows.length} row(s)`);
+  const allRows = source.prepare(selectSql).all();
+  const rows = allRows.filter((r) => validateRow(table, r));
+  const skipped = allRows.length - rows.length;
+  console.log(`[copy] ${table}: ${rows.length} row(s)` + (skipped ? ` (skipped ${skipped})` : ""));
   if (rows.length === 0) return;
 
   const placeholders = cols.map(() => "?").join(", ");
@@ -204,15 +260,14 @@ async function insertTable(table) {
     const chunk = rows.slice(i, i + chunkSize);
     if (dryRun) continue;
 
-    if (typeof client.batch === "function") {
-      const stmts = chunk.map((row) => ({
-        sql: insertSql,
-        args: cols.map((c) => row[c]),
-      }));
-      await client.batch(stmts);
-    } else {
-      for (const row of chunk) {
+    // Execute row-by-row so we can keep going if the source DB has inconsistencies.
+    for (const row of chunk) {
+      try {
         await client.execute({ sql: insertSql, args: cols.map((c) => row[c]) });
+        if (table === "assignments") importedAssignmentIds.add(Number(row.id));
+        if (table === "practice_sessions") importedSessionIds.add(Number(row.id));
+      } catch (error) {
+        console.warn(`[warn] ${table}: failed to insert id=${row.id ?? "?"}: ${error?.message ?? error}`);
       }
     }
   }
