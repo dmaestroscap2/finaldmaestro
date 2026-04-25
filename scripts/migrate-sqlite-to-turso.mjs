@@ -1,0 +1,239 @@
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+import { createClient } from "@libsql/client";
+import Database from "better-sqlite3";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, "..");
+
+function getArg(name) {
+  const idx = process.argv.indexOf(name);
+  if (idx === -1) return null;
+  return process.argv[idx + 1] ?? null;
+}
+
+function hasFlag(name) {
+  return process.argv.includes(name);
+}
+
+const fromPathArg = getArg("--from");
+const fromPath = path.resolve(projectRoot, fromPathArg || "./data/dmaestro.db");
+
+const tursoUrl = String(process.env.TURSO_DATABASE_URL ?? process.env.LIBSQL_URL ?? "").trim();
+const tursoToken = String(process.env.TURSO_AUTH_TOKEN ?? process.env.LIBSQL_AUTH_TOKEN ?? "").trim();
+
+if (!tursoUrl || !tursoToken) {
+  console.error("Missing TURSO_DATABASE_URL and/or TURSO_AUTH_TOKEN in environment.");
+  console.error("Example (PowerShell):");
+  console.error("  $env:TURSO_DATABASE_URL='libsql://...'; $env:TURSO_AUTH_TOKEN='...'; node scripts/migrate-sqlite-to-turso.mjs");
+  process.exit(1);
+}
+
+const shouldTruncate = hasFlag("--truncate");
+const dryRun = hasFlag("--dry-run");
+
+const client = createClient({ url: tursoUrl, authToken: tursoToken });
+
+const source = new Database(fromPath, { readonly: true, fileMustExist: true });
+source.pragma("foreign_keys = OFF");
+
+const schemaSql = `
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    password TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('instructor', 'student')),
+    instrument TEXT,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS classrooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    instructor_id INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS student_classrooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL REFERENCES users(id),
+    classroom_id INTEGER NOT NULL REFERENCES classrooms(id),
+    joined_at INTEGER DEFAULT (unixepoch()),
+    UNIQUE(student_id, classroom_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS music_sheets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    uploaded_by INTEGER NOT NULL REFERENCES users(id),
+    audio_path TEXT NOT NULL,
+    duration REAL NOT NULL,
+    tempo REAL,
+    key TEXT,
+    time_signature TEXT,
+    difficulty TEXT DEFAULT 'medium' CHECK (difficulty IN ('easy', 'medium', 'hard')),
+    notes_json TEXT NOT NULL,
+    klangio_job_id TEXT,
+    klangio_model TEXT,
+    klangio_json TEXT,
+    klangio_json_path TEXT,
+    klangio_mxml_path TEXT,
+    klangio_midi_quant_path TEXT,
+    klangio_pdf_path TEXT,
+    klangio_gp5_path TEXT,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    music_sheet_id INTEGER NOT NULL REFERENCES music_sheets(id),
+    student_id INTEGER REFERENCES users(id),
+    classroom_id INTEGER REFERENCES classrooms(id),
+    assigned_by INTEGER NOT NULL REFERENCES users(id),
+    status TEXT DEFAULT 'assigned' CHECK (status IN ('assigned', 'in_progress', 'completed')),
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS practice_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+    student_id INTEGER NOT NULL REFERENCES users(id),
+    accuracy_score INTEGER NOT NULL,
+    timing_score INTEGER NOT NULL,
+    total_notes INTEGER NOT NULL,
+    correct_notes INTEGER NOT NULL,
+    wrong_notes INTEGER NOT NULL,
+    missed_notes INTEGER NOT NULL,
+    performance_data TEXT,
+    duration INTEGER,
+    passed INTEGER DEFAULT 0,
+    started_at INTEGER,
+    completed_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES practice_sessions(id),
+    student_id INTEGER NOT NULL REFERENCES users(id),
+    instructor_id INTEGER REFERENCES users(id),
+    message TEXT NOT NULL,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    is_read INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+  CREATE INDEX IF NOT EXISTS idx_users_email_role ON users(email, role);
+  CREATE INDEX IF NOT EXISTS idx_assignments_student ON assignments(student_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_student ON practice_sessions(student_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_assignment ON practice_sessions(assignment_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_completed_at ON practice_sessions(completed_at);
+`;
+
+function splitSqlScript(script) {
+  return script
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function execScript(script) {
+  for (const statement of splitSqlScript(script)) {
+    if (!dryRun) await client.execute(statement);
+  }
+}
+
+const tables = [
+  "users",
+  "classrooms",
+  "student_classrooms",
+  "music_sheets",
+  "assignments",
+  "practice_sessions",
+  "feedback",
+  "notifications",
+];
+
+async function truncateAll() {
+  await execScript("PRAGMA foreign_keys=OFF;");
+  for (const table of tables.slice().reverse()) {
+    await execScript(`DELETE FROM ${table};`);
+  }
+  await execScript("PRAGMA foreign_keys=ON;");
+}
+
+function getSourceColumns(table) {
+  const cols = source.prepare(`PRAGMA table_info(${table})`).all();
+  return cols.map((c) => String(c.name));
+}
+
+async function getDestColumns(table) {
+  const result = await client.execute(`PRAGMA table_info(${table});`);
+  const rows = result.rows ?? [];
+  return rows.map((r) => String(r.name));
+}
+
+async function insertTable(table) {
+  const sourceCols = getSourceColumns(table);
+  const destCols = await getDestColumns(table);
+  const cols = sourceCols.filter((c) => destCols.includes(c));
+  if (cols.length === 0) {
+    console.log(`[skip] ${table}: no matching columns`);
+    return;
+  }
+
+  const selectSql = `SELECT ${cols.map((c) => `"${c}"`).join(", ")} FROM ${table};`;
+  const rows = source.prepare(selectSql).all();
+  console.log(`[copy] ${table}: ${rows.length} row(s)`);
+  if (rows.length === 0) return;
+
+  const placeholders = cols.map(() => "?").join(", ");
+  const insertSql = `INSERT OR REPLACE INTO ${table} (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders});`;
+
+  const chunkSize = 100;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    if (dryRun) continue;
+
+    if (typeof client.batch === "function") {
+      const stmts = chunk.map((row) => ({
+        sql: insertSql,
+        args: cols.map((c) => row[c]),
+      }));
+      await client.batch(stmts);
+    } else {
+      for (const row of chunk) {
+        await client.execute({ sql: insertSql, args: cols.map((c) => row[c]) });
+      }
+    }
+  }
+}
+
+console.log(`Source SQLite: ${fromPath}`);
+console.log(`Target Turso: ${tursoUrl}`);
+if (dryRun) console.log("Dry run enabled (no writes).");
+
+await execScript(schemaSql);
+if (shouldTruncate) {
+  console.log("Truncating destination tables...");
+  await truncateAll();
+}
+
+for (const table of tables) {
+  // eslint-disable-next-line no-await-in-loop
+  await insertTable(table);
+}
+
+console.log("Migration complete.");
+
