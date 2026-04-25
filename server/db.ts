@@ -4,7 +4,9 @@ import * as schema from '../shared/schema';
 import { mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 
-const DB_PATH = './data/dmaestro.db';
+const DB_PATH =
+  process.env.DB_PATH ||
+  (process.env.VERCEL ? '/tmp/dmaestro.db' : './data/dmaestro.db');
 
 // Ensure data directory exists
 const dir = dirname(DB_PATH);
