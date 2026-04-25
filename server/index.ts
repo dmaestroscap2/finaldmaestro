@@ -1,11 +1,11 @@
 import express from 'express';
 import cors from 'cors';
-import session from 'express-session';
+import cookieSession from 'cookie-session';
 import multer from 'multer';
 import { mkdirSync, existsSync, readFileSync, createReadStream, writeFileSync } from 'fs';
 import { join } from 'path';
 import bcrypt from 'bcryptjs';
-import { db, initializeDatabase } from './db';
+import { db, ensureDatabaseInitialized } from './db';
 import { users, classrooms, studentClassrooms, musicSheets, assignments, practiceSessions, feedback, notifications } from '../shared/schema';
 import { eq, and, or, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { extractNotesFromAudio, transposeForInstrument } from './audio-processor';
@@ -28,6 +28,17 @@ import FormData from 'form-data';
 
 const app = express();
 const PORT = 3001;
+const IS_VERCEL = Boolean(process.env.VERCEL);
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+    interface Request {
+      session?: { userId?: number } | null;
+    }
+  }
+}
 
 function buildGuitarTabPayload(
   instrument: string | null | undefined,
@@ -80,41 +91,58 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB limit
 
 // Middleware
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+const corsOrigins = String(process.env.CORS_ORIGIN ?? (IS_VERCEL ? '' : 'http://localhost:5173'))
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (corsOrigins.length === 0) return callback(null, true);
+      if (corsOrigins.includes('*')) return callback(null, true);
+      return callback(null, corsOrigins.includes(origin));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '50mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
-// Session middleware
+// Session middleware (cookie-based so it works on serverless)
 app.use(
-  session({
-    secret: 'dmaestro-real-secret-key-change-in-production',
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: false, // true in production with HTTPS
-      httpOnly: true,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
-    },
+  cookieSession({
+    name: "dmaestro_session",
+    keys: [String(process.env.SESSION_SECRET ?? "dev-session-secret-change-me")],
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    sameSite: "lax",
+    secure: IS_VERCEL,
+    httpOnly: true,
   })
 );
+app.use((req, _res, next) => {
+  if (!req.session) req.session = {};
+  next();
+});
 
-// Extend session type
-declare module 'express-session' {
-  interface SessionData {
-    userId: number;
+// Ensure DB exists before handling requests
+app.use(async (_req, res, next) => {
+  try {
+    await ensureDatabaseInitialized();
+    next();
+  } catch (error) {
+    console.error("Database init failed:", error);
+    res.status(500).json({ error: "Database unavailable" });
   }
-}
+});
 
 // Auth middleware
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!req.session.userId) {
+  if (!req.session?.userId) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
   next();
 }
-
-// Initialize database
-initializeDatabase();
 
 // Seed demo users for local/dev so the UI can log in immediately.
 // This is intentionally simple for the presentation workflow.
@@ -150,10 +178,12 @@ async function seedDemoUsers() {
   }
 }
 
-seedDemoUsers().catch((e) => {
-  // Don't block startup if seeding fails.
-  console.warn("Demo user seed skipped:", (e as any)?.message ?? e);
-});
+if (!IS_VERCEL) {
+  seedDemoUsers().catch((e) => {
+    // Don't block startup if seeding fails.
+    console.warn("Demo user seed skipped:", (e as any)?.message ?? e);
+  });
+}
 
 // ==================== MIDI PROXY ROUTES ====================
 // Proxy for BitMidi to avoid CORS issues
@@ -692,12 +722,8 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      return res.status(500).json({ error: 'Logout failed' });
-    }
-    res.json({ success: true });
-  });
+  req.session = null;
+  res.json({ success: true });
 });
 
 app.get('/api/auth/me', requireAuth, async (req, res) => {
