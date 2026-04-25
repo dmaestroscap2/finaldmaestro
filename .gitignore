@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-klangio-test/
+dist-music-utils-test/
+dist-music-preview-utils-test/
+/data/
+uploads/
+.env
+.logs/
+.tmp/
+.DS_Store
+*.log
