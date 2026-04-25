@@ -166,11 +166,9 @@ const tables = [
 ];
 
 async function truncateAll() {
-  await execScript("PRAGMA foreign_keys=OFF;");
   for (const table of tables.slice().reverse()) {
     await execScript(`DELETE FROM ${table};`);
   }
-  await execScript("PRAGMA foreign_keys=ON;");
 }
 
 function getSourceColumns(table) {
@@ -225,6 +223,9 @@ console.log(`Target Turso: ${tursoUrl}`);
 if (dryRun) console.log("Dry run enabled (no writes).");
 
 await execScript(schemaSql);
+// Importing real-world data often includes historical inconsistencies.
+// Disable foreign key enforcement during the copy, then re-enable and report.
+await execScript("PRAGMA foreign_keys=OFF;");
 if (shouldTruncate) {
   console.log("Truncating destination tables...");
   await truncateAll();
@@ -235,5 +236,14 @@ for (const table of tables) {
   await insertTable(table);
 }
 
-console.log("Migration complete.");
+await execScript("PRAGMA foreign_keys=ON;");
+if (!dryRun) {
+  const check = await client.execute("PRAGMA foreign_key_check;");
+  const rows = check.rows ?? [];
+  if (rows.length > 0) {
+    console.warn(`WARNING: foreign_key_check reported ${rows.length} issue(s).`);
+    console.warn("First few rows:", rows.slice(0, 10));
+  }
+}
 
+console.log("Migration complete.");
