@@ -10,3 +10,5 @@ uploads/
 .tmp/
 .DS_Store
 *.log
+
+.vercel

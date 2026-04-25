@@ -64,7 +64,7 @@ function buildGuitarTabPayload(
 const ML_SERVER_URL = process.env.ML_SERVER_URL || 'http://localhost:5000';
 
 // Ensure uploads directory exists
-const UPLOADS_DIR = './uploads';
+const UPLOADS_DIR = process.env.VERCEL ? '/tmp/uploads' : './uploads';
 if (!existsSync(UPLOADS_DIR)) {
   mkdirSync(UPLOADS_DIR, { recursive: true });
 }
@@ -2250,21 +2250,25 @@ app.get('/api/classrooms/roster-progress', requireAuth, async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`
-  ========================================
-  DMAESTRO-REAL Server Running
-  ========================================
-  API: http://localhost:${PORT}
-  ML Server: ${ML_SERVER_URL}
+export default app;
 
-  Transcription Endpoints:
-  - POST /api/music/upload          (Basic Pitch - fallback)
-  - POST /api/music/transcribe-ml   (Demucs + MR-MT3)
-  - GET  /api/ml/status             (Check ML server)
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`
+    ========================================
+    DMAESTRO-REAL Server Running
+    ========================================
+    API: http://localhost:${PORT}
+    ML Server: ${ML_SERVER_URL}
 
-  Set ML_SERVER_URL env var to connect to
-  remote ML server (default: localhost:5000)
-  ========================================
-  `);
-});
+    Transcription Endpoints:
+    - POST /api/music/upload          (Basic Pitch - fallback)
+    - POST /api/music/transcribe-ml   (Demucs + MR-MT3)
+    - GET  /api/ml/status             (Check ML server)
+
+    Set ML_SERVER_URL env var to connect to
+    remote ML server (default: localhost:5000)
+    ========================================
+    `);
+  });
+}
