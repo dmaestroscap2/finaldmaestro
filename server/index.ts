@@ -5,7 +5,7 @@ import multer from 'multer';
 import { mkdirSync, existsSync, readFileSync, createReadStream, writeFileSync } from 'fs';
 import { join } from 'path';
 import bcrypt from 'bcryptjs';
-import { db, ensureDatabaseInitialized } from './db';
+import { db, dbMode, ensureDatabaseInitialized } from './db';
 import { users, classrooms, studentClassrooms, musicSheets, assignments, practiceSessions, feedback, notifications } from '../shared/schema';
 import { eq, and, or, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { extractNotesFromAudio, transposeForInstrument } from './audio-processor';
@@ -147,6 +147,28 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   }
   next();
 }
+
+app.get("/api/debug/db", async (_req, res) => {
+  try {
+    await ensureDatabaseInitialized();
+    const [{ count: usersCount }] = await db.select({ count: sql<number>`count(*)` }).from(users);
+    const [{ count: assignmentsCount }] = await db.select({ count: sql<number>`count(*)` }).from(assignments);
+    const [{ count: sessionsCount }] = await db.select({ count: sql<number>`count(*)` }).from(practiceSessions);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      vercel: Boolean(process.env.VERCEL),
+      dbMode,
+      hasTursoUrl: Boolean(String(process.env.TURSO_DATABASE_URL ?? "").trim()),
+      counts: {
+        users: Number(usersCount ?? 0),
+        assignments: Number(assignmentsCount ?? 0),
+        sessions: Number(sessionsCount ?? 0),
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? "debug failed" });
+  }
+});
 
 // Seed demo users for local/dev so the UI can log in immediately.
 // This is intentionally simple for the presentation workflow.
