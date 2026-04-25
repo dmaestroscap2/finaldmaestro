@@ -95,7 +95,9 @@ const schemaSql = `
     music_sheet_id INTEGER NOT NULL REFERENCES music_sheets(id),
     student_id INTEGER REFERENCES users(id),
     classroom_id INTEGER REFERENCES classrooms(id),
+    template_assignment_id INTEGER,
     assigned_by INTEGER NOT NULL REFERENCES users(id),
+    due_date INTEGER,
     status TEXT DEFAULT 'assigned' CHECK (status IN ('assigned', 'in_progress', 'completed')),
     created_at INTEGER DEFAULT (unixepoch())
   );
@@ -104,33 +106,37 @@ const schemaSql = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     assignment_id INTEGER NOT NULL REFERENCES assignments(id),
     student_id INTEGER NOT NULL REFERENCES users(id),
-    accuracy_score INTEGER NOT NULL,
-    timing_score INTEGER NOT NULL,
+    accuracy_score REAL NOT NULL,
+    timing_score REAL NOT NULL,
     total_notes INTEGER NOT NULL,
     correct_notes INTEGER NOT NULL,
     wrong_notes INTEGER NOT NULL,
     missed_notes INTEGER NOT NULL,
-    performance_data TEXT,
-    duration INTEGER,
-    passed INTEGER DEFAULT 0,
+    performance_json TEXT,
+    duration REAL NOT NULL,
     started_at INTEGER,
-    completed_at INTEGER DEFAULT (unixepoch())
-  );
-
-  CREATE TABLE IF NOT EXISTS feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL REFERENCES practice_sessions(id),
-    student_id INTEGER NOT NULL REFERENCES users(id),
-    instructor_id INTEGER REFERENCES users(id),
-    message TEXT NOT NULL,
-    created_at INTEGER DEFAULT (unixepoch())
+    completed_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    assignment_id INTEGER REFERENCES assignments(id),
+    music_sheet_id INTEGER REFERENCES music_sheets(id),
+    created_at INTEGER DEFAULT (unixepoch()),
+    read_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL CHECK (role IN ('instructor', 'student')),
+    category TEXT NOT NULL,
+    subject TEXT NOT NULL,
     message TEXT NOT NULL,
-    is_read INTEGER DEFAULT 0,
+    rating INTEGER,
     created_at INTEGER DEFAULT (unixepoch())
   );
 
@@ -253,8 +259,8 @@ async function ensureAssignment(id) {
   await ensureUser(assignedBy);
   await client.execute({
     sql: `INSERT OR IGNORE INTO assignments
-          (id, music_sheet_id, student_id, classroom_id, assigned_by, status, created_at)
-          VALUES (?, ?, NULL, NULL, ?, 'assigned', COALESCE(?, unixepoch()))`,
+          (id, music_sheet_id, student_id, classroom_id, template_assignment_id, assigned_by, due_date, status, created_at)
+          VALUES (?, ?, NULL, NULL, NULL, ?, NULL, 'assigned', COALESCE(?, unixepoch()))`,
     args: [n, musicSheetId, assignedBy, null],
   });
 }
@@ -272,15 +278,16 @@ async function ensurePracticeSession(id) {
   await ensureUser(studentId);
   await client.execute({
     sql: `INSERT OR IGNORE INTO practice_sessions
-          (id, assignment_id, student_id, accuracy_score, timing_score, total_notes, correct_notes, wrong_notes, missed_notes, performance_data, duration, passed, started_at, completed_at)
-          VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, NULL, COALESCE(?, unixepoch()))`,
-    args: [n, assignmentId, studentId, null],
+          (id, assignment_id, student_id, accuracy_score, timing_score, total_notes, correct_notes, wrong_notes, missed_notes, performance_json, duration, started_at, completed_at)
+          VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, '')`,
+    args: [n, assignmentId, studentId],
   });
 }
 
 async function truncateAll() {
+  // Recreate schema from scratch to handle schema drift between versions.
   for (const table of tables.slice().reverse()) {
-    await execScript(`DELETE FROM ${table};`);
+    await execScript(`DROP TABLE IF EXISTS ${table};`);
   }
 }
 
@@ -325,11 +332,8 @@ function validateRow(table, row) {
     return (assignmentOk && studentOk) || repair;
   }
   if (table === "feedback") {
-    const sessionOk = importedSessionIds.has(Number(row.session_id));
-    const studentOk = sourceUserIds.has(Number(row.student_id));
-    const instructorOk =
-      row.instructor_id == null || row.instructor_id === "" || sourceUserIds.has(Number(row.instructor_id));
-    return (sessionOk && studentOk && instructorOk) || repair;
+    const userOk = sourceUserIds.has(Number(row.user_id));
+    return userOk || repair;
   }
   if (table === "notifications") {
     return sourceUserIds.has(Number(row.user_id)) || repair;
@@ -342,15 +346,17 @@ function normalizeRow(table, row) {
   const next = { ...row };
 
   if (table === "feedback") {
-    if (next.session_id == null || next.session_id === "") next.session_id = 1;
-    if (next.student_id == null || next.student_id === "") next.student_id = 1;
+    if (next.user_id == null || next.user_id === "") next.user_id = 1;
+    if (next.role == null || String(next.role).trim() === "") next.role = "student";
+    if (next.category == null || String(next.category).trim() === "") next.category = "migrated";
+    if (next.subject == null || String(next.subject).trim() === "") next.subject = "Migrated feedback";
     if (next.message == null || String(next.message).trim() === "") next.message = "(migrated feedback)";
   }
 
   if (table === "notifications") {
     if (next.user_id == null || next.user_id === "") next.user_id = 1;
-    if (next.message == null || String(next.message).trim() === "") next.message = `(migrated notification ${next.id ?? ""})`.trim();
-    if (next.is_read == null || next.is_read === "") next.is_read = 0;
+    if (next.type == null || String(next.type).trim() === "") next.type = "migrated";
+    if (next.title == null || String(next.title).trim() === "") next.title = `(migrated notification ${next.id ?? ""})`.trim();
   }
 
   return next;
@@ -430,6 +436,7 @@ await execScript("PRAGMA foreign_keys=OFF;");
 if (shouldTruncate) {
   console.log("Truncating destination tables...");
   await truncateAll();
+  await execScript(schemaSql);
 }
 
 for (const table of tables) {

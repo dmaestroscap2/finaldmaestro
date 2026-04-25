@@ -126,7 +126,9 @@ const schemaSql = `
     music_sheet_id INTEGER NOT NULL REFERENCES music_sheets(id),
     student_id INTEGER REFERENCES users(id),
     classroom_id INTEGER REFERENCES classrooms(id),
+    template_assignment_id INTEGER,
     assigned_by INTEGER NOT NULL REFERENCES users(id),
+    due_date INTEGER,
     status TEXT DEFAULT 'assigned' CHECK (status IN ('assigned', 'in_progress', 'completed')),
     created_at INTEGER DEFAULT (unixepoch())
   );
@@ -135,33 +137,37 @@ const schemaSql = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     assignment_id INTEGER NOT NULL REFERENCES assignments(id),
     student_id INTEGER NOT NULL REFERENCES users(id),
-    accuracy_score INTEGER NOT NULL,
-    timing_score INTEGER NOT NULL,
+    accuracy_score REAL NOT NULL,
+    timing_score REAL NOT NULL,
     total_notes INTEGER NOT NULL,
     correct_notes INTEGER NOT NULL,
     wrong_notes INTEGER NOT NULL,
     missed_notes INTEGER NOT NULL,
-    performance_data TEXT,
-    duration INTEGER,
-    passed INTEGER DEFAULT 0,
+    performance_json TEXT,
+    duration REAL NOT NULL,
     started_at INTEGER,
-    completed_at INTEGER DEFAULT (unixepoch())
-  );
-
-  CREATE TABLE IF NOT EXISTS feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL REFERENCES practice_sessions(id),
-    student_id INTEGER NOT NULL REFERENCES users(id),
-    instructor_id INTEGER REFERENCES users(id),
-    message TEXT NOT NULL,
-    created_at INTEGER DEFAULT (unixepoch())
+    completed_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    assignment_id INTEGER REFERENCES assignments(id),
+    music_sheet_id INTEGER REFERENCES music_sheets(id),
+    created_at INTEGER DEFAULT (unixepoch()),
+    read_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL CHECK (role IN ('instructor', 'student')),
+    category TEXT NOT NULL,
+    subject TEXT NOT NULL,
     message TEXT NOT NULL,
-    is_read INTEGER DEFAULT 0,
+    rating INTEGER,
     created_at INTEGER DEFAULT (unixepoch())
   );
 
