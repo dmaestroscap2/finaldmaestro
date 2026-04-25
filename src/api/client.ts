@@ -3,7 +3,10 @@
  * Handles authentication, requests, and error handling
  */
 
-export const API_BASE = "http://localhost:3001/api";
+// Prefer configuring the API base in Vercel/production via Vite env vars:
+// - VITE_API_BASE (e.g. "https://your-backend.example.com/api" or "/api")
+export const API_BASE: string =
+  (import.meta as any)?.env?.VITE_API_BASE?.toString?.() || "http://localhost:3001/api";
 
 interface ApiResponse<T> {
   success?: boolean;
