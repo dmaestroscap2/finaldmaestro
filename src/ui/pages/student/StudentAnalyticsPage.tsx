@@ -233,6 +233,8 @@ export function StudentAnalyticsPage() {
     const rotateXLabels = true;
     const xLabelY = h - 12;
 
+    const selectedPoint = selectedDayKey ? points.find((p) => p.dayKey === selectedDayKey) ?? null : null;
+
     return (
       <div
         style={{
@@ -305,6 +307,22 @@ export function StudentAnalyticsPage() {
             );
           })}
         </svg>
+        {selectedPoint ? (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              marginTop: 10,
+              paddingTop: 10,
+              borderTop: "2px solid rgba(167,139,250,.85)",
+              color: "rgba(241,194,75,.92)",
+              fontWeight: 900,
+            }}
+          >
+            Overall Score Per Day: {Math.round(selectedPoint.score)}% ({selectedPoint.count}{" "}
+            {selectedPoint.count === 1 ? "Session" : "Sessions"})
+          </div>
+        ) : null}
       </div>
     );
   }, [selectedSong, selectedSongDailySeries, selectedDayKey]);

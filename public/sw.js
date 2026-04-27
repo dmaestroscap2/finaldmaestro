@@ -3,7 +3,7 @@
    - Network-first for navigations (with cached fallback)
 */
 
-const CACHE_NAME = "dmaestro-pwa-v1";
+const CACHE_NAME = "dmaestro-pwa-v2";
 const CORE_ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/pwa-192.png", "/pwa-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
