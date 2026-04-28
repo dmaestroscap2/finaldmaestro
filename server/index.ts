@@ -749,6 +749,20 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   req.session = null;
+  // Be explicit about clearing the cookie on all browsers / proxies.
+  // cookie-session should do this, but we've seen cases (especially with cached frontends)
+  // where the client appears to remain signed in.
+  const isSecure = IS_VERCEL;
+  const cookieParts = [
+    "dmaestro_session=",
+    "Path=/",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    "Max-Age=0",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (isSecure) cookieParts.push("Secure");
+  res.setHeader("Set-Cookie", cookieParts.join("; "));
   res.json({ success: true });
 });
 
