@@ -1929,14 +1929,125 @@ app.get('/api/sessions/instructor', requireAuth, async (req, res) => {
       ? await db.select().from(classrooms).where(inArray(classrooms.id, uniqueClassroomIds as any))
       : [];
 
+    const studentClassroomRows = uniqueStudentIds.length
+      ? await db
+          .select({
+            studentId: studentClassrooms.studentId,
+            classroomId: classrooms.id,
+            classroomName: classrooms.name,
+          })
+          .from(studentClassrooms)
+          .innerJoin(classrooms, eq(studentClassrooms.classroomId, classrooms.id))
+          .where(
+            and(
+              inArray(studentClassrooms.studentId, uniqueStudentIds as any),
+              eq(classrooms.instructorId, userId)
+            )
+          )
+      : [];
+
     const studentMap = new Map(studentRows.map((student) => [student.id, student]));
+    const musicMap = new Map(musicRows.map((music) => [music.id, music]));
+    const classroomMap = new Map(classroomRows.map((classroom) => [classroom.id, classroom]));
+    const fallbackClassroomByStudentId = new Map<number, { id: number; name: string }>();
+    for (const row of studentClassroomRows) {
+      if (!fallbackClassroomByStudentId.has(row.studentId)) {
+        fallbackClassroomByStudentId.set(row.studentId, { id: row.classroomId, name: row.classroomName });
+      }
+    }
+
+    res.json(
+      sessionRows.map((session) => {
+        const assignment = assignmentMap.get(session.assignmentId);
+        const student = studentMap.get(session.studentId);
+        const music = assignment ? musicMap.get(assignment.musicSheetId) : null;
+        const classroom = assignment?.classroomId ? classroomMap.get(assignment.classroomId) : null;
+        const fallbackClassroom = fallbackClassroomByStudentId.get(session.studentId) ?? null;
+
+        return {
+          ...session,
+          performanceData: session.performanceJson ? JSON.parse(session.performanceJson) : null,
+          studentName: student?.name ?? null,
+          studentInstrument: student?.instrument ?? null,
+          classroomId: classroom?.id ?? assignment?.classroomId ?? fallbackClassroom?.id ?? null,
+          classroomName: classroom?.name ?? fallbackClassroom?.name ?? null,
+          assignmentTitle: music?.title ?? null,
+          assignmentArtist: music?.artist ?? null,
+          assignmentStatus: assignment?.status ?? null,
+        };
+      })
+    );
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/sessions/instructor/member/:studentId', requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.userId!;
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (!user) return res.status(401).json({ error: 'User not found' });
+    if (!isInstructorRole(user.role)) {
+      return res.status(403).json({ error: 'Only instructors can view member analytics' });
+    }
+
+    const studentId = Number(req.params.studentId);
+    if (!Number.isFinite(studentId)) {
+      return res.status(400).json({ error: 'Invalid studentId' });
+    }
+
+    const instructorAssignments = await db
+      .select()
+      .from(assignments)
+      .where(and(eq(assignments.assignedBy, userId), eq(assignments.studentId, studentId)));
+
+    if (instructorAssignments.length === 0) return res.json([]);
+
+    const assignmentMap = new Map(instructorAssignments.map((assignment) => [assignment.id, assignment]));
+    const assignmentIds = instructorAssignments.map((assignment) => assignment.id);
+
+    const sessionRows = await db
+      .select()
+      .from(practiceSessions)
+      .where(inArray(practiceSessions.assignmentId, assignmentIds as any))
+      .orderBy(desc(practiceSessions.completedAt));
+
+    const uniqueMusicIds = Array.from(
+      new Set(
+        instructorAssignments
+          .map((assignment) => assignment.musicSheetId)
+          .filter((musicSheetId): musicSheetId is number => Number.isFinite(musicSheetId))
+      )
+    );
+    const uniqueClassroomIds = Array.from(
+      new Set(
+        instructorAssignments
+          .map((assignment) => assignment.classroomId)
+          .filter((classroomId): classroomId is number => Number.isFinite(classroomId))
+      )
+    );
+
+    const [student] = await db.select().from(users).where(eq(users.id, studentId));
+    const musicRows = uniqueMusicIds.length
+      ? await db.select().from(musicSheets).where(inArray(musicSheets.id, uniqueMusicIds as any))
+      : [];
+    const classroomRows = uniqueClassroomIds.length
+      ? await db.select().from(classrooms).where(inArray(classrooms.id, uniqueClassroomIds as any))
+      : [];
+
+    const [fallbackClassroomRow] = await db
+      .select({ id: classrooms.id, name: classrooms.name })
+      .from(studentClassrooms)
+      .innerJoin(classrooms, eq(studentClassrooms.classroomId, classrooms.id))
+      .where(and(eq(studentClassrooms.studentId, studentId), eq(classrooms.instructorId, userId)))
+      .limit(1);
+
     const musicMap = new Map(musicRows.map((music) => [music.id, music]));
     const classroomMap = new Map(classroomRows.map((classroom) => [classroom.id, classroom]));
 
     res.json(
       sessionRows.map((session) => {
         const assignment = assignmentMap.get(session.assignmentId);
-        const student = studentMap.get(session.studentId);
         const music = assignment ? musicMap.get(assignment.musicSheetId) : null;
         const classroom = assignment?.classroomId ? classroomMap.get(assignment.classroomId) : null;
 
@@ -1945,8 +2056,8 @@ app.get('/api/sessions/instructor', requireAuth, async (req, res) => {
           performanceData: session.performanceJson ? JSON.parse(session.performanceJson) : null,
           studentName: student?.name ?? null,
           studentInstrument: student?.instrument ?? null,
-          classroomId: classroom?.id ?? assignment?.classroomId ?? null,
-          classroomName: classroom?.name ?? null,
+          classroomId: classroom?.id ?? assignment?.classroomId ?? fallbackClassroomRow?.id ?? null,
+          classroomName: classroom?.name ?? fallbackClassroomRow?.name ?? null,
           assignmentTitle: music?.title ?? null,
           assignmentArtist: music?.artist ?? null,
           assignmentStatus: assignment?.status ?? null,
