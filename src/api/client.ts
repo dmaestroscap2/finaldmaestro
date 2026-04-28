@@ -18,7 +18,9 @@ async function apiRequest<T>(
   endpoint: string,
   options?: RequestInit
 ): Promise<T> {
-  const url = `${API_BASE}${endpoint}`;
+  const base = API_BASE.endsWith("/") ? API_BASE.slice(0, -1) : API_BASE;
+  const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  const url = `${base}${path}`;
 
   const response = await fetch(url, {
     ...options,
@@ -34,6 +36,13 @@ async function apiRequest<T>(
       error: `HTTP ${response.status}`,
     }));
     throw new Error(error.error || "API request failed");
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    const bodyText = await response.text().catch(() => "");
+    const preview = bodyText.slice(0, 120).replace(/\s+/g, " ").trim();
+    throw new Error(preview ? `Unexpected response: ${preview}` : "Unexpected non-JSON response");
   }
 
   return response.json();

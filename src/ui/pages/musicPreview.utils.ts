@@ -4,7 +4,12 @@ export function apiOriginFromBase(apiBase: string): string {
     const u = new URL(apiBase);
     return u.origin;
   } catch {
-    return "";
+    // Support relative bases like "/api" in production.
+    try {
+      return typeof window !== "undefined" ? window.location.origin : "";
+    } catch {
+      return "";
+    }
   }
 }
 
