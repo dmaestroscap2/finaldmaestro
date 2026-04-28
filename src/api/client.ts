@@ -9,7 +9,14 @@ export const API_BASE: string =
   (import.meta as any)?.env?.VITE_API_BASE?.toString?.() || "http://localhost:3001/api";
 
 export function apiUrlFor(endpoint: string): string {
-  const base = API_BASE.endsWith("/") ? API_BASE.slice(0, -1) : API_BASE;
+  let base = API_BASE.endsWith("/") ? API_BASE.slice(0, -1) : API_BASE;
+
+  // Support common relative base values like "api" by normalizing to "/api".
+  // If a full URL is provided (http/https), leave it untouched.
+  if (base && !base.startsWith("http://") && !base.startsWith("https://") && !base.startsWith("/")) {
+    base = `/${base}`;
+  }
+
   const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
   return `${base}${path}`;
 }
