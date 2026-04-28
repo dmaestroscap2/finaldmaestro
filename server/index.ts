@@ -113,6 +113,12 @@ app.use(
 app.use(express.json({ limit: '50mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
+// Prevent caches (including service workers/proxies) from storing API responses.
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+
 // Session middleware (cookie-based so it works on serverless)
 app.use(
   cookieSession({
