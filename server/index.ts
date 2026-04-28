@@ -170,6 +170,20 @@ app.get("/api/debug/db", async (_req, res) => {
   }
 });
 
+app.get("/api/debug/session", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    vercel: Boolean(process.env.VERCEL),
+    isVercelRuntime: IS_VERCEL,
+    host: String(req.headers.host ?? ""),
+    origin: String(req.headers.origin ?? ""),
+    referer: String(req.headers.referer ?? ""),
+    hasCookieHeader: Boolean(String(req.headers.cookie ?? "").trim()),
+    cookieHeaderPreview: String(req.headers.cookie ?? "").slice(0, 120),
+    session: req.session ?? null,
+  });
+});
+
 // Seed demo users for local/dev so the UI can log in immediately.
 // This is intentionally simple for the presentation workflow.
 async function seedDemoUsers() {
