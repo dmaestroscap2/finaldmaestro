@@ -1,5 +1,5 @@
 import React from "react";
-import { authAPI } from "../../api/client";
+import { ApiError, authAPI } from "../../api/client";
 import { useAutoRefresh } from "../shared/useAutoRefresh";
 import {
   initialAuthSessionState,
@@ -29,13 +29,20 @@ export function AuthSessionProvider({ children }: { children: React.ReactNode })
         dispatch({ type: "refresh:success", user });
       }
       return user;
-    } catch {
+    } catch (error) {
+      const isUnauthorized =
+        error instanceof ApiError && (error.status === 401 || error.status === 403);
+
       if (requestId === requestIdRef.current) {
-        dispatch({ type: "auth:clear" });
+        // Only clear auth when the session is truly invalid (401/403) or we have no user yet.
+        // Otherwise, keep the current authenticated user to avoid logging out due to unrelated API failures.
+        if (isUnauthorized || !state.user) {
+          dispatch({ type: "auth:clear" });
+        }
       }
       return null;
     }
-  }, []);
+  }, [state.user]);
 
   const setAuthenticatedUser = React.useCallback((user: AuthenticatedUser) => {
     requestIdRef.current += 1;

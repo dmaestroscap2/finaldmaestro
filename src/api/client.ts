@@ -8,6 +8,26 @@
 export const API_BASE: string =
   (import.meta as any)?.env?.VITE_API_BASE?.toString?.() || "http://localhost:3001/api";
 
+export function apiUrlFor(endpoint: string): string {
+  const base = API_BASE.endsWith("/") ? API_BASE.slice(0, -1) : API_BASE;
+  const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  return `${base}${path}`;
+}
+
+export class ApiError extends Error {
+  status: number;
+  url: string;
+  payloadPreview?: string;
+
+  constructor(message: string, status: number, url: string, payloadPreview?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.url = url;
+    this.payloadPreview = payloadPreview;
+  }
+}
+
 interface ApiResponse<T> {
   success?: boolean;
   data?: T;
@@ -18,9 +38,7 @@ async function apiRequest<T>(
   endpoint: string,
   options?: RequestInit
 ): Promise<T> {
-  const base = API_BASE.endsWith("/") ? API_BASE.slice(0, -1) : API_BASE;
-  const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-  const url = `${base}${path}`;
+  const url = apiUrlFor(endpoint);
 
   const response = await fetch(url, {
     ...options,
@@ -32,17 +50,33 @@ async function apiRequest<T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({
-      error: `HTTP ${response.status}`,
-    }));
-    throw new Error(error.error || "API request failed");
+    const contentType = response.headers.get("content-type") ?? "";
+    const normalizedContentType = contentType.toLowerCase();
+
+    if (normalizedContentType.includes("application/json")) {
+      const error = (await response.json().catch(() => ({
+        error: `HTTP ${response.status}`,
+      }))) as ApiResponse<unknown>;
+      const message = error.error || "API request failed";
+      throw new ApiError(message, response.status, url, String(message).slice(0, 200));
+    }
+
+    const bodyText = await response.text().catch(() => "");
+    const preview = bodyText.slice(0, 160).replace(/\s+/g, " ").trim();
+    const message = preview ? `HTTP ${response.status}: ${preview}` : `HTTP ${response.status}`;
+    throw new ApiError(message, response.status, url, preview || undefined);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
     const bodyText = await response.text().catch(() => "");
     const preview = bodyText.slice(0, 120).replace(/\s+/g, " ").trim();
-    throw new Error(preview ? `Unexpected response: ${preview}` : "Unexpected non-JSON response");
+    throw new ApiError(
+      preview ? `Unexpected response from ${url}: ${preview}` : `Unexpected non-JSON response from ${url}`,
+      response.status,
+      url,
+      preview || undefined
+    );
   }
 
   return response.json();
