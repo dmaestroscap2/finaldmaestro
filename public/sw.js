@@ -3,7 +3,7 @@
    - Network-first for navigations (with cached fallback)
 */
 
-const CACHE_NAME = "dmaestro-pwa-v2";
+const CACHE_NAME = "dmaestro-pwa-v3";
 const CORE_ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/pwa-192.png", "/pwa-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
@@ -36,6 +36,13 @@ self.addEventListener("fetch", (event) => {
 
   if (request.method !== "GET") return;
   if (url.origin !== self.location.origin) return;
+
+  // Never cache API responses. Caching `/api/*` can cause stale auth/session state
+  // (e.g., `/api/auth/me`) and confusing behavior after logout.
+  if (url.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   if (isNavigationRequest(request)) {
     event.respondWith(
